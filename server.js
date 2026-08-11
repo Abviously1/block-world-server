@@ -191,7 +191,7 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('countdown', n);
       } else {
         clearInterval(iv);
-        io.to(room.code).emit('gameStart', { players: playersPublicList(room), seed: room.seed });
+        io.to(room.code).emit('gameStart', { players: playersPublicList(room), seed: room.seed, epochMs: Date.now() });
       }
     }, COUNTDOWN_STEP_MS);
   });
