@@ -110,6 +110,8 @@ io.on('connection', (socket) => {
       hostId: socket.id,
       seed: Math.floor(Math.random() * 1000000),
       started: false,
+      allowLateJoins: false,
+      epochMs: null,
       players: new Map(),
       createdAt: Date.now()
     };
@@ -131,17 +133,32 @@ io.on('connection', (socket) => {
     const room = rooms.get(code);
 
     if (!room) return socket.emit('joinError', 'Room not found. Check the code and try again.');
-    if (room.started) return socket.emit('joinError', 'This game has already started.');
-    if (room.players.size >= MAX_PLAYERS) return socket.emit('joinError', `Room is full (${MAX_PLAYERS}/${MAX_PLAYERS} players).`);
     if (!name) return socket.emit('joinError', 'Please enter a valid name.');
+    if (room.players.size >= MAX_PLAYERS) return socket.emit('joinError', `Room is full (${MAX_PLAYERS}/${MAX_PLAYERS} players).`);
+
+    if (room.started && !room.allowLateJoins) {
+      return socket.emit('joinError', 'This game has already started.');
+    }
 
     room.players.set(socket.id, { id: socket.id, name, outfit: outfit || {}, ready: false, score: 0 });
     socket.join(code);
     socket.data.roomCode = code;
     socket.data.name = name;
 
-    socket.emit('joinSuccess', { code });
-    emitLobbyUpdate(code);
+    if (room.started) {
+      // Late join: drop straight into the running game — no lobby, no countdown.
+      socket.emit('joinMidGame', { code, seed: room.seed, epochMs: room.epochMs, players: playersPublicList(room) });
+      socket.to(code).emit('playerJoined', { id: socket.id, name, outfit: outfit || {} });
+    } else {
+      socket.emit('joinSuccess', { code });
+      emitLobbyUpdate(code);
+    }
+  });
+
+  socket.on('setAllowLateJoins', (allow) => {
+    const room = getMyRoom(socket);
+    if (!room || room.hostId !== socket.id) return;
+    room.allowLateJoins = !!allow;
   });
 
   // ── Lobby updates ───────────────────────────────────────────
@@ -191,7 +208,8 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('countdown', n);
       } else {
         clearInterval(iv);
-        io.to(room.code).emit('gameStart', { players: playersPublicList(room), seed: room.seed, epochMs: Date.now() });
+        room.epochMs = Date.now();
+        io.to(room.code).emit('gameStart', { players: playersPublicList(room), seed: room.seed, epochMs: room.epochMs });
       }
     }, COUNTDOWN_STEP_MS);
   });
