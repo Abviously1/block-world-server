@@ -100,15 +100,23 @@ io.on('connection', (socket) => {
   socket.data.name = null;
 
   // ── Host a new room ──────────────────────────────────────────
-  socket.on('hostGame', ({ name, outfit } = {}) => {
+  socket.on('hostGame', ({ name, outfit, gameMode } = {}) => {
     name = sanitizeName(name);
     if (!name) return socket.emit('hostError', 'Please enter a valid name.');
+    gameMode = gameMode === 'survival' ? 'survival' : 'creative';
 
     const code = generateRoomCode();
     const room = {
       code,
       hostId: socket.id,
       seed: Math.floor(Math.random() * 1000000),
+      gameMode,
+      pvpEnabled: false,
+      // Survival: everyone spawns at ONE shared random point, not each near their own village.
+      // Picked here (not client-side) so every player agrees on the same spot regardless of
+      // their own local world generation timing.
+      survivalSpawnAngle: Math.random() * Math.PI * 2,
+      survivalSpawnDist: 60 + Math.random() * 400,
       started: false,
       allowLateJoins: false,
       epochMs: null,
@@ -147,7 +155,11 @@ io.on('connection', (socket) => {
 
     if (room.started) {
       // Late join: drop straight into the running game — no lobby, no countdown.
-      socket.emit('joinMidGame', { code, seed: room.seed, epochMs: room.epochMs, players: playersPublicList(room) });
+      socket.emit('joinMidGame', {
+        code, seed: room.seed, epochMs: room.epochMs, players: playersPublicList(room),
+        gameMode: room.gameMode, pvpEnabled: room.pvpEnabled,
+        survivalSpawnAngle: room.survivalSpawnAngle, survivalSpawnDist: room.survivalSpawnDist
+      });
       socket.to(code).emit('playerJoined', { id: socket.id, name, outfit: outfit || {} });
     } else {
       socket.emit('joinSuccess', { code });
@@ -159,6 +171,13 @@ io.on('connection', (socket) => {
     const room = getMyRoom(socket);
     if (!room || room.hostId !== socket.id) return;
     room.allowLateJoins = !!allow;
+  });
+
+  socket.on('setPvpEnabled', (enabled) => {
+    const room = getMyRoom(socket);
+    if (!room || room.hostId !== socket.id) return;
+    room.pvpEnabled = !!enabled;
+    io.to(room.code).emit('pvpEnabledChanged', room.pvpEnabled);
   });
 
   // ── Lobby updates ───────────────────────────────────────────
@@ -209,7 +228,11 @@ io.on('connection', (socket) => {
       } else {
         clearInterval(iv);
         room.epochMs = Date.now();
-        io.to(room.code).emit('gameStart', { players: playersPublicList(room), seed: room.seed, epochMs: room.epochMs });
+        io.to(room.code).emit('gameStart', {
+          players: playersPublicList(room), seed: room.seed, epochMs: room.epochMs,
+          gameMode: room.gameMode, pvpEnabled: room.pvpEnabled,
+          survivalSpawnAngle: room.survivalSpawnAngle, survivalSpawnDist: room.survivalSpawnDist
+        });
       }
     }, COUNTDOWN_STEP_MS);
   });
@@ -237,6 +260,13 @@ io.on('connection', (socket) => {
     socket.to(room.code).emit('blockChanged', {
       x: data.x, y: data.y, z: data.z, blockId: data.blockId
     });
+  });
+
+  socket.on('playerAttack', ({ targetId, damage } = {}) => {
+    const room = getMyRoom(socket);
+    if (!room || !room.pvpEnabled || !targetId || !room.players.has(targetId)) return;
+    const attacker = room.players.get(socket.id);
+    io.to(targetId).emit('tookDamage', { fromId: socket.id, fromName: attacker ? attacker.name : '?', damage: Math.max(0, Math.min(20, damage | 0)) });
   });
 
   socket.on('chatMessage', (text) => {
